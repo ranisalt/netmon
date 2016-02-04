@@ -11,47 +11,56 @@ import twitter
 Bandwidth = namedtuple('Bandwidth', ['download', 'upload'])
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+logger.propagate = False
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - [%(levelname)s] %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 class Monitor:
-    def __init__(self, expected, auth, message, ratio=1/3, threshold=5):
-        self.expected = expected
-        self.ratio = ratio
+    def __init__(self, expected, auth, message, ratio=0.4, threshold=5):
+        self.expected = Bandwidth(download=expected.download * ratio,
+                upload=expected.upload * ratio)
         self.message = message
         self.twitter = twitter.Twitter(auth=auth)
         self.warning_count = 0
         self.threshold = threshold
         self.last_tweet = 0
 
+        logger.info('Minimum expected speed: %s/%s' % (
+            pyspeedtest.pretty_speed(expected.download),
+            pyspeedtest.pretty_speed(expected.upload),))
+
     def check(self):
-        logger.info('Starting check...')
+        logger.debug('Starting check...')
         speedtest = pyspeedtest.SpeedTest()
         download, upload = speedtest.download(), speedtest.upload()
-        logger.info('Download speed: %s', pyspeedtest.pretty_speed(download))
-        logger.info('Upload speed: %s', pyspeedtest.pretty_speed(upload))
+        logger.info('Speed: %s/%s', pyspeedtest.pretty_speed(download),
+            pyspeedtest.pretty_speed(upload))
 
-        if download < self.expected.download * self.ratio or \
-                upload < self.expected.upload * self.ratio:
-            logging.warning('Speeds under minimal expected, sending tweet...')
-
-            # wait 10 minutes to issue a tweet and only tweet once an hour
-            if self.warning_count == self.threshold and \
-                    (self.last_tweet + 60 * 60) < int(time.time()):
-                self.twitter.statuses.update(tweet=self.message % {
-                    'download': pyspeedtest.pretty_speed(download),
-                    'upload': pyspeedtest.pretty_speed(upload),
-                })
-                self.last_tweet = int(time.time())
-
+        if download < self.expected.download or upload < self.expected.upload:
             # updating count outside the else branch ensures only one tweet
             # will be sent in a "bad speed window", that is, it will only tweet
             # again once your speed goes above minimum expected values
             self.warning_count += 1
 
+            logger.warning('Speeds under minimal expected.')
+
+            # wait 10 minutes to issue a tweet and only tweet once every 3 hours
+            if self.warning_count == self.threshold and \
+                    (self.last_tweet + 3 * 60 * 60) < int(time.time()):
+                logger.warning('Sending tweet...')
+                self.twitter.statuses.update(status=self.message % {
+                    'download': pyspeedtest.pretty_speed(download),
+                    'upload': pyspeedtest.pretty_speed(upload),
+                })
+                self.last_tweet = int(time.time())
+
         else:
-            logging.info('Everything working as expected.')
+            logger.info('Everything working as expected.')
             self.warning_count = 0
 
-        logger.info('Finished check.')
+        logger.debug('Finished check.')
 
 if __name__ == '__main__':
     import argparse
@@ -75,6 +84,7 @@ if __name__ == '__main__':
         elif unit == 'g':
             speed *= 1024 * 1024 * 1024
 
+        logging.info('Speed set to %d bytes.' % (int(speed),))
         return int(speed)
 
     parser = argparse.ArgumentParser()
